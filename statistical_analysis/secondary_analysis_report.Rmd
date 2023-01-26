@@ -1,0 +1,220 @@
+---
+title: "Analysis results (secondary)"
+author: "Akihiro Shiroshita"
+date: "`r Sys.time()`"
+output: 
+    word_document:
+      toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.height = 4,
+	fig.pos = "t",
+	message = FALSE,
+	warning = FALSE,
+	dpi = 350,
+	out.extra = ""
+)
+packages = c("devtools",
+             "usethis",
+             "here",
+             "readr",
+             "readxl",
+             "haven",
+             "expss",
+             "tidyverse",
+             "tidylog",
+             "lubridate",
+             "ggplot2",
+             "RColorBrewer",
+             "ggplotgui",
+             "ggthemes",
+             "arsenal",
+             "stats",
+             "epitools",
+             "DescTools",
+             "epiR",
+             "RVAideMemoire",
+             "tableone",
+             "naniar",
+             "VIM",
+             "margins",
+             "modmarg",
+             "broom",
+             "aod",
+             "fitdistrplus",
+             "rms",
+             "Hmisc",
+             "mice",
+             "mitools",
+             "norm2",
+             "margins",
+             "geepack",
+             "multcomp",
+             "WeightIt",
+             "cobalt",
+             "MatchIt",
+             "boot")
+package.check <- lapply(packages, FUN = function(x){
+  if (!require(x, character.only = TRUE)){
+    install.packages(x, dependencies = TRUE)
+    library(x, character.only = TRUE)
+  }
+})
+
+# import data
+df <- read_dta(here("input/data.dta"))
+```
+
+# Delete unnecessary variables  
+
+```{r}
+df <- df %>% 
+  dplyr::select(sex, bmi, adm_jcs_cat, adm_adl_cat, hughjones_cat,
+                o2_cat, shock, copd, diabetes, renal, malignancy,
+                bun_cat, age_cat, albumin_cat, pleural_look, dev_place,
+                hospid, definite,
+                pleural_max_cat, loculation_cat,
+                inter_pleural_effusion_cat, lung_abscess_cat,
+                los, disc_outcome_cat, death_30, super_early_ope) %>% 
+  mutate(sex = factor(sex),
+         bmi_cat = case_when(bmi < 20 ~ 0,
+                             20 <= bmi & bmi < 30 ~ 1,
+                             30 <= bmi ~2),
+         bmi_cat = factor(bmi_cat),
+         adm_jcs_cat = factor(adm_jcs_cat),
+         adm_adl_cat = factor(adm_adl_cat),
+         hughjones_cat = factor(hughjones_cat),
+         o2_cat = factor(o2_cat),
+         shock = factor(shock),
+         copd = factor(copd),
+         diabetes = factor(diabetes),
+         renal = factor(renal),
+         malignancy = factor(malignancy),
+         bun_cat = factor(bun_cat), 
+         age_cat = factor(age_cat),
+         albumin_cat = factor(albumin_cat),
+         pleural_look = factor(pleural_look),
+         dev_place = factor(dev_place),
+         hospid = factor(hospid),
+         definite = factor(definite),
+         pleural_max_cat = factor(pleural_max_cat),
+         loculation_cat = factor(loculation_cat),
+         inter_pleural_effusion_cat = factor(inter_pleural_effusion_cat),
+         lung_abscess_cat = factor(lung_abscess_cat),
+         disc_outcome_cat = factor(disc_outcome_cat),
+         death_30 = factor(death_30),
+         super_early_ope = replace_na(super_early_ope, 0),
+         super_early_ope = factor(super_early_ope),
+         )
+```
+
+# Complete case analysis  
+
+```{r}
+df_comp <- df %>% 
+  drop_na()
+
+trt_form <- "super_early_ope ~ sex + bmi_cat + adm_jcs_cat + adm_adl_cat + hughjones_cat + o2_cat + shock + copd + diabetes + renal + malignancy + bun_cat + age_cat + albumin_cat + pleural_look + dev_place + hospid + definite + pleural_max_cat + loculation_cat + inter_pleural_effusion_cat + lung_abscess_cat"
+
+set.seed(1234)
+
+w <- weightit(as.formula(trt_form),
+                 data = as.data.frame(df_comp),
+                 method = "ps",
+                 s.weights = NULL,
+                 estimand = "ATT")
+
+love.plot(w,
+          binary = "std",
+          continuous = "std",
+          asb = TRUE,
+          stats = c("m", "ks"),
+          s.d.denom = "treat",
+          line = TRUE,
+          var.order = "adj",
+          thresholds = c(.20, .05))
+cols <- brewer.pal(6, "Paired")
+bal.plot(w,
+         var.name = "prop.score",
+         which = "both",
+         type = "histogram",
+         colors = cols[c(2,6)],
+         mirror = TRUE)
+fit <- glm(disc_outcome_cat ~ super_early_ope,
+           data = df_comp,
+           family = binomial(link = logit),
+           weights = w$weights)
+marg <- margins(fit, variables = "super_early_ope")
+summary(marg)
+
+boot_fun <- function(data, index){
+  w <- weightit(as.formula(trt_form),
+                data = data[index,],
+                estimand = "ATE")
+  fit <- glm(disc_outcome_cat ~ super_early_ope,
+             data = data[index,],
+             family = binomial(link = logit),
+             weights = w$weights)
+  marg <- margins(fit, variables = "super_early_ope")
+  return(summary(marg)[1,"AME"])
+}
+set.seed(1234)
+res <- boot(boot_fun,
+            data = df_comp,
+            R = 500)
+plot(res)
+res[["t0"]]
+boot.ci(res, type = "perc")[["percent"]][c(4,5)]
+```
+
+
+# Multiple imputation  
+
+```{r}
+df_imp <- df %>% 
+  dplyr::select(-los, -death_30)
+
+df_imp0 <- mice(df_imp, maxit = 0)
+df_imp0$method
+df_imp0$predictorMatrix
+
+m <- 100
+df_mi100 <- mice(df_imp,
+                 m = m,
+                 seed=1234,
+                 maxit=50,
+                 printFlag=FALSE)
+plot(df_mi100)
+df_mi100 %>% write_rds("df_mi_secondary1.rds", compress = "gz")
+```
+
+# Outcome analysis  
+
+```{r}
+df_mi100 <- read_rds("df_mi_secondary1.rds")
+df_m_stacked <- complete(df_mi100,
+                         action="long") %>% 
+  as_tibble()
+
+set.seed(1234)
+df_m_stacked_ps <- df_m_stacked %>% 
+  group_by(.imp) %>% 
+  nest() %>% 
+  mutate(boot_fit = map(data, function(df){
+                res <- boot(boot_fun,
+                data = df,
+                R = 500)
+                est_se <- c(res[["t0"]][["super_early_ope1"]],sd(res[["t"]]))
+                return(est_se)
+  }))
+est_se <- df_m_stacked_ps[[3]]
+est <- lapply(est_se, "[", 1)
+se <- lapply(est_se, "[", 2)
+miinf <- miInference(est, se)
+miinf
+miinf[["est"]] + c(qnorm(0.025), qnorm(0.025, lower.tail = FALSE))*miinf[["std.err"]]
+```
+
